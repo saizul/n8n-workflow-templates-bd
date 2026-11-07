@@ -1,0 +1,467 @@
+{
+  "name": "bKash/Nagad Payment SMS Log and Order Match",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "payment-sms",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "0f1ae92f-8438-52c6-850f-c071a57da327",
+      "name": "SMS Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "f0da987c-ca45-55be-a73b-2720f5445c14"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.headers['x-webhook-secret'] }}",
+              "rightValue": "YOUR_WEBHOOK_SECRET",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ce14b1a7-9d46-5f93-b1c2-707eb0beee49",
+      "name": "Secret OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extracts amount, sender number and TrxID from a FORWARDED payment SMS.\n// NOT an official bKash/Nagad integration. It only reads text your phone already received.\n// Message formats change over time: test with your own real messages and adjust the regexes below.\nconst body = $input.first().json.body || $input.first().json;\nconst text = String(body.message ?? body.text ?? body.body ?? body.content ?? '').replace(/\\s+/g, ' ').trim();\nconst from = String(body.from ?? body.sender ?? body.address ?? '').trim();\n\nconst blank = (extra) => [{ json: { parsed: false, ...extra } }];\n\n// Safety: never process anything that looks like a PIN/OTP message, and never keep the raw SMS.\nif (/\\b(pin|otp|verification code|পিন|ওটিপি)\\b/i.test(text)) return blank({ reason: 'sensitive_message_dropped' });\n\nconst hay = from + ' ' + text;\nlet provider = '';\nif (/bkash/i.test(hay) || /TrxID/i.test(text)) provider = 'bKash';\nelse if (/nagad/i.test(hay) || /TxnID/i.test(text)) provider = 'Nagad';\nif (!provider) return blank({ reason: 'not_a_payment_sms' });\n\n// Only incoming money. bKash: \"You have received Tk 500.00 from 01XXXXXXXXX. Fee Tk 0.00. Balance Tk 1,234.00. TrxID ABC123XYZ at 07/11/2026 14:22\"\n// Nagad:  \"Money Received. Amount: Tk 500.00 Sender: 01XXXXXXXXX Ref: N/A TxnID: 7XXXXXXXX Fee: 0.00 Balance: Tk 1,000.00 07/11/2026 14:22\"\nconst incoming = /(you have received|money received|received money|cash in)/i.test(text);\nif (!incoming) return blank({ reason: 'not_incoming', provider });\n\nconst num = (s) => parseFloat(String(s).replace(/,/g, ''));\nlet amountM, senderM, trxM;\nif (provider === 'bKash') {\n  amountM = text.match(/received\\s+Tk\\.?\\s*([\\d,]+(?:\\.\\d+)?)/i);\n  senderM = text.match(/from\\s+(?:\\+?88)?(01\\d{9})/i);\n  trxM = text.match(/TrxID\\s*[:\\-]?\\s*([A-Z0-9]{8,12})/i);\n} else {\n  amountM = text.match(/Amount\\s*[:\\-]?\\s*Tk\\.?\\s*([\\d,]+(?:\\.\\d+)?)/i);\n  senderM = text.match(/Sender\\s*[:\\-]?\\s*(?:\\+?88)?(01\\d{9})/i);\n  trxM = text.match(/(?:TxnID|TrxID|Txn ID)\\s*[:\\-]?\\s*([A-Z0-9]{6,14})/i);\n}\nif (!amountM || !trxM) return blank({ reason: 'format_not_recognised', provider });\n\nreturn [{ json: {\n  parsed: true, provider,\n  amount: num(amountM[1]),\n  senderNumber: senderM ? senderM[1] : '',\n  trxId: trxM[1].toUpperCase(),\n  receivedAt: new Date().toISOString(),\n} }];"
+      },
+      "id": "e7745400-1ef6-515a-89ab-ff77bb0bf262",
+      "name": "Parse Payment SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.parsed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "941dd002-57b0-56f3-aedd-92499f8eed92",
+      "name": "Parsed OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Payments",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "TrxID": "={{ $json.trxId }}",
+            "Date": "={{ $json.receivedAt }}",
+            "Provider": "={{ $json.provider }}",
+            "Amount": "={{ $json.amount }}",
+            "SenderNumber": "={{ $json.senderNumber }}",
+            "MatchedOrder": ""
+          },
+          "matchingColumns": [
+            "TrxID"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "5a34963f-e15a-5582-8dff-be314419e67d",
+      "name": "Log Payment",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "returnAll": true,
+        "options": {},
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Pending"
+            }
+          ]
+        }
+      },
+      "id": "6afc4e97-dac7-5d3b-be2e-480e1e0b2f92",
+      "name": "Read Pending Orders",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Matches the payment to a pending order.\n// Rule 1: amount must equal the order Total.\n// Rule 2: if several orders have the same amount, the order whose Phone matches the sender number wins.\n// If still ambiguous, nothing is auto-matched (the owner is alerted instead).\nconst pay = $('Parse Payment SMS').first().json;\nconst last11 = (s) => String(s || '').replace(/\\D/g, '').slice(-11);\nconst orders = $input.all().map((i) => i.json).filter((o) => o.OrderID);\nconst sameAmount = orders.filter((o) => Math.abs(parseFloat(o.Total) - pay.amount) < 0.01);\nlet hit = null;\nif (sameAmount.length === 1) hit = sameAmount[0];\nelse if (sameAmount.length > 1) {\n  const byPhone = sameAmount.filter((o) => last11(o.Phone) && last11(o.Phone) === last11(pay.senderNumber));\n  if (byPhone.length === 1) hit = byPhone[0];\n}\nconst toIntl = (p) => { const d = String(p || '').replace(/\\D/g, ''); return /^01\\d{9}$/.test(d) ? '88' + d : d; };\nconst base = { trxId: pay.trxId, amount: pay.amount, provider: pay.provider, senderNumber: pay.senderNumber };\nif (!hit) return [{ json: { ...base, matched: false,\n  note: `Unmatched ${pay.provider} payment Tk ${pay.amount} from ${pay.senderNumber || 'unknown'} (TrxID ${pay.trxId}). Candidates with same amount: ${sameAmount.length}.` } }];\nconst customerWa = toIntl(hit.WhatsApp || hit.Phone);\nreturn [{ json: { ...base, matched: true, orderId: hit.OrderID, customerWa,\n  replyText: `Payment received: Tk ${pay.amount} (TrxID ${pay.trxId}). Your order ${hit.OrderID} is confirmed. Thank you!`,\n  note: `Matched order ${hit.OrderID}` } }];"
+      },
+      "id": "afe347b6-c5f7-51dd-98d5-1abb4a5d0c82",
+      "name": "Match Against Pending Orders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.matched }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d759e233-55b3-5a6d-bb4f-212523169b1d",
+      "name": "Matched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "OrderID": "={{ $json.orderId }}",
+            "Status": "Paid",
+            "TrxID": "={{ $json.trxId }}"
+          },
+          "matchingColumns": [
+            "OrderID"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "a3f1d053-4761-55c7-a1f3-9d8ecbe30ade",
+      "name": "Mark Order Paid",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1760,
+        40
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Match Against Pending Orders').first().json.customerWa, type: 'text', text: { body: $('Match Against Pending Orders').first().json.replyText } }) }}",
+        "options": {}
+      },
+      "id": "73b31347-5549-5208-85e2-1a8228ee5df4",
+      "name": "Reply to Customer (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        40
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.note }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "e2697b92-9625-5475-9f03-111ec03ad0ef",
+      "name": "Alert Owner: Unmatched Payment",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1760,
+        220
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=Payment SMS not processed. Reason: {{ $json.reason }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "8199f5d1-b740-58fe-957b-90deeec1d631",
+      "name": "Alert Owner: Unreadable SMS",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "SMS Webhook": {
+      "main": [
+        [
+          {
+            "node": "Secret OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Secret OK?": {
+      "main": [
+        [
+          {
+            "node": "Parse Payment SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Payment SMS": {
+      "main": [
+        [
+          {
+            "node": "Parsed OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsed OK?": {
+      "main": [
+        [
+          {
+            "node": "Log Payment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Owner: Unreadable SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Payment": {
+      "main": [
+        [
+          {
+            "node": "Read Pending Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Pending Orders": {
+      "main": [
+        [
+          {
+            "node": "Match Against Pending Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Against Pending Orders": {
+      "main": [
+        [
+          {
+            "node": "Matched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Matched?": {
+      "main": [
+        [
+          {
+            "node": "Mark Order Paid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Owner: Unmatched Payment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Order Paid": {
+      "main": [
+        [
+          {
+            "node": "Reply to Customer (WhatsApp)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,420 @@
+{
+  "name": "AI Customer Support for Facebook Messenger",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "messenger-support",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "06e9ddcd-b6c2-5eeb-97c2-f42dbd2b6c34",
+      "name": "Webhook Verify (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "e081bc13-977e-5775-b163-deb4ab82d6af"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "YOUR_VERIFY_TOKEN",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "491c6100-1e54-5d1a-a6c4-574ad2874fec",
+      "name": "Verify Token OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": {}
+      },
+      "id": "74c981ad-5771-5cca-8106-323fc36b48c8",
+      "name": "Respond Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "e052cdb9-9373-59b4-a6c3-194d86a5289b",
+      "name": "Respond Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "messenger-support",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "c0e210be-b783-5c59-8f73-edc81a4b2328",
+      "name": "Webhook Incoming (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        320
+      ],
+      "webhookId": "00e1e692-153b-5ff6-a989-5eb9db9f0f18"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pulls the sender and text from a Messenger webhook and flags human-handoff requests.\n// Edit HANDOFF_WORDS to taste (English and Bangla).\nconst HANDOFF_WORDS = ['human', 'agent', 'operator', 'real person', 'call me', 'এজেন্ট', 'মানুষ', 'কারো সাথে কথা', 'কল করুন'];\n\nconst body = $input.first().json.body || $input.first().json;\nconst ev = body?.entry?.[0]?.messaging?.[0];\nif (!ev || !ev.message || ev.message.is_echo || !ev.message.text) return []; // ignore echoes, reads, attachments\n\nconst text = ev.message.text.trim();\nconst lower = text.toLowerCase();\nconst isHandoff = HANDOFF_WORDS.some((w) => lower.includes(w.toLowerCase()));\nreturn [{ json: { senderId: ev.sender.id, text, isHandoff, receivedAt: new Date().toISOString() } }];"
+      },
+      "id": "571897ea-433b-5d3b-a8be-5a1973be1838",
+      "name": "Extract Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.isHandoff }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ff71083e-4ea9-51ea-8be8-b79edd02f058",
+      "name": "Wants Human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: { id: $('Extract Message').first().json.senderId }, messaging_type: 'RESPONSE', message: { text: 'ধন্যবাদ! আমাদের একজন প্রতিনিধি শীঘ্রই আপনার সাথে যোগাযোগ করবেন। / Thanks! A team member will reply to you shortly.' } }) }}",
+        "options": {}
+      },
+      "id": "39954b47-38cb-5148-9d07-610052dd995c",
+      "name": "Send Handoff Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        440
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=Customer needs a human on Messenger.\nSender ID: {{ $('Extract Message').first().json.senderId }}\nMessage: {{ $('Extract Message').first().json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7c68fa1b-19f0-57a5-8af5-e5960e5e3620",
+      "name": "Alert Owner: Handoff",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        940,
+        440
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "21b4d2a8-c5ac-54f1-926a-0c0d2cff422f",
+              "name": "faq",
+              "value": "Business: YOUR BUSINESS NAME\nOpening hours: Saturday to Thursday, 10:00 to 20:00 (Asia/Dhaka). Friday closed.\nDelivery: Inside Dhaka 1-2 days (BDT 60). Outside Dhaka 3-5 days (BDT 120).\nPayment: Cash on delivery, bKash (send money to 01XXXXXXXXX and share the TrxID).\nReturns: Exchange within 3 days if the product is unused and in original packaging.\nContact: 01XXXXXXXXX (call/WhatsApp), hello@YOUR_DOMAIN.com",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "dc5a1736-ade8-5aa5-b6c9-19fd5f8043a8",
+      "name": "FAQ and Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "hasOutputParser": false,
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessagePromptTemplate",
+              "message": "=You are the customer support assistant for the business described in the FAQ below. Answer ONLY using the FAQ. If the answer is not in the FAQ, say you are not sure and offer to connect the customer with a human (tell them to write 'human'). Reply in the same language as the customer (Bangla or English), in at most 4 short sentences. Never invent prices, stock, or policies. Never ask for passwords, PINs, or OTPs.\n\nFAQ:\n{{ $json.faq }}"
+            }
+          ]
+        }
+      },
+      "id": "c30406de-cdd9-51e3-9136-a25a51418a49",
+      "name": "AI Reply",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        940,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 300
+        }
+      },
+      "id": "d5dac77e-0ccd-549d-9bc0-0cf322c5f4b1",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        940,
+        400
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: { id: $('Extract Message').first().json.senderId }, messaging_type: 'RESPONSE', message: { text: String($json.text || '').slice(0, 1900) } }) }}",
+        "options": {}
+      },
+      "id": "23ce7cf1-19b7-5e24-b11d-03724cde63ca",
+      "name": "Send AI Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Verify (GET)": {
+      "main": [
+        [
+          {
+            "node": "Verify Token OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token OK?": {
+      "main": [
+        [
+          {
+            "node": "Respond Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Incoming (POST)": {
+      "main": [
+        [
+          {
+            "node": "Extract Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Message": {
+      "main": [
+        [
+          {
+            "node": "Wants Human?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wants Human?": {
+      "main": [
+        [
+          {
+            "node": "Send Handoff Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FAQ and Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Handoff Reply": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner: Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ and Settings": {
+      "main": [
+        [
+          {
+            "node": "AI Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Reply",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Reply": {
+      "main": [
+        [
+          {
+            "node": "Send AI Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}

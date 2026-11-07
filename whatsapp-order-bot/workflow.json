@@ -1,0 +1,337 @@
+{
+  "name": "WhatsApp Order Bot (Bangla/English)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp-orders",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1fbdc46c-fbc2-5e37-940d-f610fefcb810",
+      "name": "Webhook Verify (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "4601db43-d0a8-5515-8feb-1c2bda90af50"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "YOUR_VERIFY_TOKEN",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "baa381fb-48f6-5278-a8f6-917f5ddb008c",
+      "name": "Verify Token OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": {}
+      },
+      "id": "c8552e51-8e19-5220-88b0-c33579dc0069",
+      "name": "Respond Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "5898a466-a15a-5f6e-9f39-17c48f16989d",
+      "name": "Respond Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-orders",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "0b97e3f9-ff11-57a1-9f57-ff2115a61a91",
+      "name": "Webhook Incoming (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "008b0088-c6ab-5ac1-abd1-52abe11ac84f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parses a WhatsApp Cloud API text message into an order.\n// Accepted examples (Bangla or English, Bangla digits supported):\n//   Name: Rahim\n//   Phone: 01712345678\n//   Address: House 5, Road 3, Mirpur, Dhaka\n//   2 x Panjabi\n//   Saree x 1\n// Edit PRICES (BDT) to get an automatic total; unknown items are listed without a price.\nconst PRICES = { 'panjabi': 1200, 'saree': 2500, 'পাঞ্জাবি': 1200, 'শাড়ি': 2500 };\n\nconst bn = '০১২৩৪৫৬৭৮৯';\nconst toEn = (s) => String(s || '').replace(/[০-৯]/g, (d) => bn.indexOf(d));\n\nconst body = $input.first().json.body || $input.first().json;\nconst value = body?.entry?.[0]?.changes?.[0]?.value;\nconst msg = value?.messages?.[0];\nif (!msg || msg.type !== 'text') return []; // ignore delivery/read statuses and non-text messages\n\nconst raw = msg.text.body || '';\nconst text = toEn(raw);\nconst isBangla = /[ঀ-৿]/.test(raw);\n\nconst label = (names) => {\n  const m = text.match(new RegExp('(?:' + names + ')\\\\s*[:：\\\\-]\\\\s*(.+)', 'i'));\n  return m ? m[1].trim() : '';\n};\nconst name = label('name|নাম') || value?.contacts?.[0]?.profile?.name || '';\nconst phone = label('phone|mobile|contact|ফোন|মোবাইল').replace(/[^\\d+]/g, '');\nconst address = label('address|ঠিকানা');\n\nconst items = [];\nfor (const line of text.split(/\\r?\\n|,/)) {\n  const l = line.trim().replace(/^[-*•\\d]+[.)]\\s+/, '');\n  if (!l || /^(name|phone|mobile|contact|address|নাম|ফোন|মোবাইল|ঠিকানা)\\s*[:：\\-]/i.test(l)) continue;\n  let m = l.match(/^(.+?)\\s*[x×*]\\s*(\\d+)\\s*(?:pcs|pc|টি|পিস)?$/i);\n  let item, qty;\n  if (m) { item = m[1]; qty = parseInt(m[2], 10); }\n  else if ((m = l.match(/^(\\d+)\\s*(?:pcs|pc|টি|পিস)?\\s*[x×*\\-]?\\s*(.+)$/i))) { qty = parseInt(m[1], 10); item = m[2]; }\n  else continue;\n  item = item.trim();\n  if (!item || !qty || qty > 500) continue;\n  const unit = PRICES[item.toLowerCase()];\n  items.push({ item, qty, unit: unit ?? null, line: unit != null ? unit * qty : null });\n}\n\nconst valid = items.length > 0 && (address.length > 5 || phone.length >= 10);\nconst priced = items.filter((i) => i.line != null);\nconst total = priced.reduce((s, i) => s + i.line, 0);\nconst itemsText = items.map((i) => `${i.item} x ${i.qty}`).join('; ');\nconst orderId = 'ORD-' + Date.now().toString(36).toUpperCase();\n\nconst replyText = valid\n  ? (isBangla\n      ? `ধন্যবাদ ${name}! আপনার অর্ডার গ্রহণ করা হয়েছে।\\nঅর্ডার নম্বর: ${orderId}\\nপণ্য: ${itemsText}\\n` +\n        (priced.length ? `মোট: ৳${total}\\n` : '') + `ঠিকানা: ${address || 'দেওয়া হয়নি'}\\nআমরা শীঘ্রই যোগাযোগ করব।`\n      : `Thank you ${name}! Your order is received.\\nOrder ID: ${orderId}\\nItems: ${itemsText}\\n` +\n        (priced.length ? `Total: BDT ${total}\\n` : '') + `Address: ${address || 'not provided'}\\nWe will contact you shortly.`)\n  : (isBangla\n      ? 'অর্ডার বোঝা যায়নি। অনুগ্রহ করে এভাবে লিখুন:\\nনাম: ...\\nফোন: ...\\nঠিকানা: ...\\n2 x পণ্যের নাম'\n      : 'Sorry, I could not read your order. Please send:\\nName: ...\\nPhone: ...\\nAddress: ...\\n2 x Item name');\n\nreturn [{ json: {\n  orderId, valid, receivedAt: new Date().toISOString(), customerWaId: msg.from,\n  phoneNumberId: value?.metadata?.phone_number_id || 'YOUR_PHONE_NUMBER_ID',\n  name, phone, address, itemsText, itemCount: items.length, total: priced.length ? total : '',\n  rawMessage: raw, replyText\n} }];"
+      },
+      "id": "90242beb-048a-56bd-b996-da1e9c8580e0",
+      "name": "Parse Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df9e3179-3ab6-50d4-a4ed-c1f7b89a4db9",
+      "name": "Valid Order?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "OrderID": "={{ $json.orderId }}",
+            "Date": "={{ $json.receivedAt }}",
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json.phone }}",
+            "WhatsApp": "={{ $json.customerWaId }}",
+            "Address": "={{ $json.address }}",
+            "Items": "={{ $json.itemsText }}",
+            "Total": "={{ $json.total }}",
+            "Status": "Pending",
+            "RawMessage": "={{ $json.rawMessage }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "93481312-e8cd-526f-9234-02689c1767c6",
+      "name": "Append to Orders Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Parse Order').first().json.phoneNumberId }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Parse Order').first().json.customerWaId, type: 'text', text: { body: $('Parse Order').first().json.replyText } }) }}",
+        "options": {}
+      },
+      "id": "66adc4ab-e243-5509-8ff0-ef891bf2b4c2",
+      "name": "Send Order Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Parse Order').first().json.phoneNumberId }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Parse Order').first().json.customerWaId, type: 'text', text: { body: $('Parse Order').first().json.replyText } }) }}",
+        "options": {}
+      },
+      "id": "4155c789-9fa3-55e1-88a2-73ca8f4d0925",
+      "name": "Send Help Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Verify (GET)": {
+      "main": [
+        [
+          {
+            "node": "Verify Token OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token OK?": {
+      "main": [
+        [
+          {
+            "node": "Respond Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Incoming (POST)": {
+      "main": [
+        [
+          {
+            "node": "Parse Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Order": {
+      "main": [
+        [
+          {
+            "node": "Valid Order?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Order?": {
+      "main": [
+        [
+          {
+            "node": "Append to Orders Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Help Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Orders Sheet": {
+      "main": [
+        [
+          {
+            "node": "Send Order Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,186 @@
+{
+  "name": "Facebook Lead Ads to Sheets and Owner Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "newLead",
+        "app": "YOUR_FACEBOOK_APP_ID",
+        "page": "YOUR_PAGE_ID",
+        "form": "YOUR_LEAD_FORM_ID",
+        "options": {}
+      },
+      "id": "a5f6dd3f-ef31-5698-9136-b5765f0cded7",
+      "name": "Facebook Lead Ads Trigger",
+      "type": "n8n-nodes-base.facebookLeadAdsTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "credentials": {
+        "facebookLeadAdsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Facebook Lead Ads account"
+        }
+      },
+      "webhookId": "54215e66-781b-5cee-b71e-d19523b12977"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalises a Facebook lead into flat columns.\n// The trigger may return simplified fields (full_name, email, phone_number ...)\n// or a raw field_data array; both are handled.\nconst lead = $input.first().json;\nconst flat = {};\nif (Array.isArray(lead.field_data)) {\n  for (const f of lead.field_data) flat[f.name] = Array.isArray(f.values) ? f.values.join(', ') : f.values;\n}\nconst pick = (...keys) => {\n  for (const k of keys) {\n    const v = flat[k] ?? lead[k];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();\n  }\n  return '';\n};\nlet phone = pick('phone_number', 'phone', 'mobile', 'mobile_number').replace(/[^\\d+]/g, '');\n// Bangladesh numbers: 01XXXXXXXXX -> 8801XXXXXXXXX (international, no +)\nif (/^01\\d{9}$/.test(phone)) phone = '88' + phone;\nif (/^\\+/.test(phone)) phone = phone.slice(1);\n\nconst out = {\n  leadId: lead.id || lead.leadgen_id || '',\n  receivedAt: new Date().toISOString(),\n  name: pick('full_name', 'name', 'first_name'),\n  email: pick('email'),\n  phone,\n  formId: lead.form_id || 'YOUR_LEAD_FORM_ID',\n  adId: lead.ad_id || '',\n  campaign: pick('campaign_name') || lead.campaign_name || '',\n};\nout.alert = `New Facebook lead\\nName: ${out.name || '-'}\\nPhone: ${out.phone || '-'}\\nEmail: ${out.email || '-'}\\nTime: ${out.receivedAt}`;\nreturn [{ json: out }];"
+      },
+      "id": "90ae919e-5ae5-55f7-b6d3-0462260b5a6c",
+      "name": "Normalize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "LeadID": "={{ $json.leadId }}",
+            "Date": "={{ $json.receivedAt }}",
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json.phone }}",
+            "Email": "={{ $json.email }}",
+            "FormID": "={{ $json.formId }}",
+            "AdID": "={{ $json.adId }}",
+            "Status": "New"
+          },
+          "matchingColumns": [
+            "LeadID"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "84664815-b27b-53fd-ae4d-4458ff5eedba",
+      "name": "Append Lead to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $('Normalize Lead').first().json.alert }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "61a4990f-db93-5e0d-bb86-1e75c54ad30e",
+      "name": "Notify Owner (Telegram)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: 'YOUR_OWNER_WHATSAPP_NUMBER', type: 'template', template: { name: 'new_lead_alert', language: { code: 'en' }, components: [{ type: 'body', parameters: [{ type: 'text', text: $('Normalize Lead').first().json.name || '-' }, { type: 'text', text: $('Normalize Lead').first().json.phone || '-' }] }] } }) }}",
+        "options": {}
+      },
+      "id": "13b16c0b-4d2a-528e-82be-fa82bbad8b5c",
+      "name": "Notify Owner (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      },
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Facebook Lead Ads Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lead": {
+      "main": [
+        [
+          {
+            "node": "Append Lead to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Lead to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Notify Owner (Telegram)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Owner (WhatsApp)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}

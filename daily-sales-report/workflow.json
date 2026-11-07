@@ -1,0 +1,166 @@
+{
+  "name": "Daily Sales Report (Sheets to Telegram and Email)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 21,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "46321ff7-81f8-5094-b90d-d603d2b2e8ab",
+      "name": "Every Day 9 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "d166516a-e747-5413-a8e1-d19e2b07db7b",
+      "name": "Read Orders",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summarises today's orders (Asia/Dhaka). Expected columns in the Orders tab:\n// Date (ISO or YYYY-MM-DD...), OrderID, Product (or Items), Qty, Total, Status\n// Change STATUS_COUNTED to include/exclude statuses (e.g. only 'Paid').\nconst STATUS_COUNTED = ['Pending', 'Paid', 'Delivered'];\nconst CURRENCY = 'BDT';\n\nconst fmtDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(d); // YYYY-MM-DD\nconst today = fmtDay(new Date());\n\nconst rows = $input.all().map((i) => i.json).filter((r) => r.OrderID);\nconst dayOf = (v) => {\n  if (!v) return '';\n  const d = new Date(v);\n  return isNaN(d) ? String(v).slice(0, 10) : fmtDay(d);\n};\nconst todays = rows.filter((r) => dayOf(r.Date) === today && (!r.Status || STATUS_COUNTED.includes(r.Status)));\n\nconst num = (v) => parseFloat(String(v ?? '').replace(/,/g, '')) || 0;\nconst revenue = todays.reduce((s, r) => s + num(r.Total), 0);\nconst byProduct = {};\nfor (const r of todays) {\n  const p = r.Product || r.Items || 'Other';\n  byProduct[p] = byProduct[p] || { qty: 0, revenue: 0 };\n  byProduct[p].qty += num(r.Qty) || 1;\n  byProduct[p].revenue += num(r.Total);\n}\nconst top = Object.entries(byProduct).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 5);\nconst avg = todays.length ? revenue / todays.length : 0;\n\nconst lines = [\n  `Daily sales report - ${today}`,\n  `Orders: ${todays.length}`,\n  `Revenue: ${CURRENCY} ${revenue.toLocaleString('en-US')}`,\n  `Average order: ${CURRENCY} ${Math.round(avg).toLocaleString('en-US')}`,\n];\nif (top.length) {\n  lines.push('', 'Top products:');\n  top.forEach(([p, v], i) => lines.push(`${i + 1}. ${p} - ${v.qty} pcs, ${CURRENCY} ${v.revenue.toLocaleString('en-US')}`));\n} else {\n  lines.push('', 'No orders today.');\n}\nconst text = lines.join('\\n');\nconst html = '<pre style=\"font-family:monospace;font-size:14px\">' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>';\nreturn [{ json: { date: today, orders: todays.length, revenue, subject: `Sales report ${today}: ${CURRENCY} ${revenue}`, text, html } }];"
+      },
+      "id": "c7c144b5-5a23-5e5a-9257-855dee9cba64",
+      "name": "Summarize Today",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a788d399-c1a6-56d4-b995-63321b6aebc7",
+      "name": "Send Telegram Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        680,
+        120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "reports@YOUR_DOMAIN.com",
+        "toEmail": "owner@YOUR_DOMAIN.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "717f0eac-16e1-534d-bf1b-cc6877c315a9",
+      "name": "Send Email Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_ME",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Day 9 PM": {
+      "main": [
+        [
+          {
+            "node": "Read Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Orders": {
+      "main": [
+        [
+          {
+            "node": "Summarize Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Today": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Report",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}
