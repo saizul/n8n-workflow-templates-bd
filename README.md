@@ -42,6 +42,14 @@ Template 3 also uses a `Payments` tab (`TrxID | Date | Provider | Amount | Sende
 - WhatsApp and Messenger have platform policies (24-hour reply window, approved templates for business-initiated messages). Follow them.
 - These templates are provided as-is under the MIT license. Test before relying on them for real money or customers.
 
+## Validation
+
+Every `workflow.json` is checked by `scripts/validate-workflows.js` on each push and pull request (`.github/workflows/validate.yml`). It verifies that the file parses, that nodes have a unique name, type and position, that connections point to existing nodes, that no node is left unconnected, and that no API keys, bearer tokens or other secrets are embedded. Run it locally before opening a pull request:
+
+```bash
+node scripts/validate-workflows.js
+```
+
 ## বাংলায় সারসংক্ষেপ
 
 এই রিপোজিটরিতে বাংলাদেশের ছোট ব্যবসার জন্য পাঁচটি রেডি n8n ওয়ার্কফ্লো আছে:
