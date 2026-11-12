@@ -13,6 +13,7 @@ Importable [n8n](https://n8n.io) workflows for common small-business jobs in Ban
 | 3 | [bkash-payment-confirmation-log](bkash-payment-confirmation-log/) | Webhook (forwarded SMS) | Extracts amount, sender, TrxID from bKash/Nagad SMS, logs it, matches pending orders, replies | Android SMS forwarder, Google Sheets, WhatsApp, Telegram |
 | 4 | [daily-sales-report](daily-sales-report/) | Schedule (9 PM Dhaka) | Summarises today's sales from Sheets and sends it by Telegram and email | Google Sheets, Telegram, SMTP |
 | 5 | [ai-customer-support-messenger](ai-customer-support-messenger/) | Messenger webhook | Answers customers from your FAQ with an LLM, with a human-handoff keyword | Messenger, OpenAI, Telegram |
+| 6 | [pending-order-payment-reminder](pending-order-payment-reminder/) | Schedule (hourly) | Sends one WhatsApp payment reminder for unpaid orders, auto-cancels after 48 h, respects quiet hours | Google Sheets, WhatsApp Cloud API, Telegram |
 
 Each folder contains `workflow.json` and a `README.md` with the node list, required credentials, setup steps and customisation tips.
 
@@ -28,9 +29,9 @@ The workflows are set to the `Asia/Dhaka` timezone. Credential IDs in the files 
 
 ## Google Sheets layout
 
-Templates 1, 3 and 4 share one spreadsheet with an `Orders` tab. Suggested header row:
+Templates 1, 3, 4 and 6 share one spreadsheet with an `Orders` tab. Suggested header row:
 
-`OrderID | Date | Name | Phone | WhatsApp | Address | Items | Product | Qty | Total | Status | TrxID | RawMessage`
+`OrderID | Date | Name | Phone | WhatsApp | Address | Items | Product | Qty | Total | Status | TrxID | ReminderSentAt | RawMessage`
 
 Template 3 also uses a `Payments` tab (`TrxID | Date | Provider | Amount | SenderNumber | MatchedOrder`) and template 2 a `Leads` tab (`LeadID | Date | Name | Phone | Email | FormID | AdID | Status`). Column headers must match exactly.
 
@@ -44,21 +45,25 @@ Template 3 also uses a `Payments` tab (`TrxID | Date | Provider | Amount | Sende
 
 ## Validation
 
-Every `workflow.json` is checked by `scripts/validate-workflows.js` on each push and pull request (`.github/workflows/validate.yml`). It verifies that the file parses, that nodes have a unique name, type and position, that connections point to existing nodes, that no node is left unconnected, and that no API keys, bearer tokens or other secrets are embedded. Run it locally before opening a pull request:
+Every `workflow.json` is checked by `scripts/validate-workflows.js` on each push and pull request (`.github/workflows/validate.yml`). It verifies that the file parses, that nodes have a unique name, type and position, that connections point to existing nodes, that no node is left unconnected, that Code node JavaScript compiles, that each template folder has a README, and that no API keys, bearer tokens or other secrets are embedded.
+
+The logic inside the Code nodes (SMS parsing, payment matching, reminder timing) is also unit tested: `test/helpers.js` runs a node's `jsCode` outside n8n with stubbed `$input` / `$('Node')` and a frozen clock. Run both locally before opening a pull request (Node 20+, no dependencies):
 
 ```bash
 node scripts/validate-workflows.js
+node --test test/*.test.js
 ```
 
 ## বাংলায় সারসংক্ষেপ
 
-এই রিপোজিটরিতে বাংলাদেশের ছোট ব্যবসার জন্য পাঁচটি রেডি n8n ওয়ার্কফ্লো আছে:
+এই রিপোজিটরিতে বাংলাদেশের ছোট ব্যবসার জন্য ছয়টি রেডি n8n ওয়ার্কফ্লো আছে:
 
 1. **হোয়াটসঅ্যাপ অর্ডার বট** - বাংলা বা ইংরেজিতে পাঠানো অর্ডার পড়ে গুগল শিটে সংরক্ষণ করে এবং গ্রাহককে সারাংশ পাঠায়।
 2. **ফেসবুক লিড অ্যালার্ট** - ফেসবুক লিড অ্যাড থেকে আসা লিড শিটে রাখে এবং মালিককে টেলিগ্রাম বা হোয়াটসঅ্যাপে জানায়।
 3. **বিকাশ/নগদ পেমেন্ট লগ** - ফরওয়ার্ড করা পেমেন্ট এসএমএস থেকে পরিমাণ, প্রেরকের নম্বর ও TrxID বের করে শিটে লগ করে এবং অপেক্ষমাণ অর্ডারের সাথে মেলায়। **এটি বিকাশ বা নগদের কোনো অফিসিয়াল API ব্যবহার করে না এবং কখনোই পিন বা ওটিপি সংরক্ষণ করা যাবে না।**
 4. **দৈনিক সেলস রিপোর্ট** - প্রতিদিন রাতে আজকের বিক্রির সারাংশ টেলিগ্রাম ও ইমেইলে পাঠায়।
 5. **মেসেঞ্জার এআই সাপোর্ট** - আপনার FAQ থেকে গ্রাহকের প্রশ্নের উত্তর দেয়; "human" লিখলে মানুষের কাছে হস্তান্তর করে।
+6. **পেমেন্ট রিমাইন্ডার** - অপরিশোধিত অর্ডারের গ্রাহককে একবার হোয়াটসঅ্যাপে মনে করিয়ে দেয় এবং ৪৮ ঘণ্টা পর অর্ডার বাতিল করে মালিককে জানায়।
 
 **ব্যবহারের ধাপ:** n8n খুলুন -> Import from file -> `workflow.json` নির্বাচন করুন -> নিজের ক্রেডেনশিয়াল দিন -> `YOUR_...` লেখাগুলো বদলান -> টেস্ট করে অ্যাক্টিভ করুন।
 

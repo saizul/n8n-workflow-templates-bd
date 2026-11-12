@@ -1,0 +1,426 @@
+{
+  "name": "Pending Order Payment Reminder and Auto-Cancel",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "7c726d9b-963b-5534-a9b1-5b69dbf7dd57",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "returnAll": true,
+        "options": {},
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Pending"
+            }
+          ]
+        }
+      },
+      "id": "0ed2b706-b8d3-58b5-a548-cfee2aaf7b0d",
+      "name": "Read Pending Orders",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Decides which pending orders get a payment reminder, which are auto-cancelled,\n// and which need a human. Reads the Orders rows from the previous node.\n// ---- settings -------------------------------------------------------------\nconst REMIND_AFTER_HOURS = 6;      // send one reminder once an unpaid order is this old\nconst CANCEL_AFTER_HOURS = 48;     // cancel if still unpaid this long after ordering\nconst QUIET_START = 22;            // no customer messages from 22:00 ...\nconst QUIET_END = 9;               // ... until 09:00 (Dhaka time)\nconst MAX_PER_RUN = 50;            // stay well inside WhatsApp rate limits\nconst PAY_TO = 'YOUR_BKASH_NUMBER'; // shown in the reminder (bKash/Nagad merchant or personal number)\nconst DHAKA_OFFSET_MIN = 360;      // Asia/Dhaka is UTC+6 all year (no DST)\n// ---------------------------------------------------------------------------\n\nconst now = Date.now();\nconst dhakaHour = new Date(now + DHAKA_OFFSET_MIN * 60000).getUTCHours();\nconst quiet = QUIET_START > QUIET_END\n  ? dhakaHour >= QUIET_START || dhakaHour < QUIET_END\n  : dhakaHour >= QUIET_START && dhakaHour < QUIET_END;\n\n// Accepts ISO timestamps (written by whatsapp-order-bot), \"YYYY-MM-DD HH:mm\" or\n// \"DD/MM/YYYY HH:mm\" in Dhaka time, and Google Sheets serial day numbers.\nconst parseDate = (v) => {\n  if (v === null || v === undefined || v === '') return NaN;\n  if (typeof v === 'number' || /^\\d+(\\.\\d+)?$/.test(String(v).trim())) {\n    return Math.round((Number(v) - 25569) * 86400000) - DHAKA_OFFSET_MIN * 60000;\n  }\n  const s = String(v).trim();\n  if (/[zZ]|[+-]\\d\\d:?\\d\\d$/.test(s)) return Date.parse(s);\n  let m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[ T](\\d{1,2}):(\\d{2}))?/);\n  let y, mo, d, h, mi;\n  if (m) [, y, mo, d, h, mi] = m;\n  else if ((m = s.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})(?:\\s+(\\d{1,2}):(\\d{2}))?/))) [, d, mo, y, h, mi] = m;\n  else return NaN;\n  return Date.UTC(+y, +mo - 1, +d, +(h || 0), +(mi || 0)) - DHAKA_OFFSET_MIN * 60000;\n};\nconst toIntl = (p) => {\n  const d = String(p || '').replace(/\\D/g, '');\n  if (/^01\\d{9}$/.test(d)) return '88' + d;\n  return /^8801\\d{9}$/.test(d) ? d : '';\n};\n\nconst out = [];\nfor (const { json: o } of $input.all()) {\n  if (!o || !o.OrderID) continue;\n  if (String(o.Status || '').trim().toLowerCase() !== 'pending') continue;\n  if (String(o.TrxID || '').trim()) continue; // a payment is already linked\n  const placed = parseDate(o.Date);\n  const base = { orderId: String(o.OrderID), name: o.Name || '', total: o.Total ?? '' };\n  if (Number.isNaN(placed)) {\n    out.push({ ...base, action: 'review', note: `Order ${o.OrderID}: unreadable Date \"${o.Date}\", check the sheet.` });\n    continue;\n  }\n  const ageHours = (now - placed) / 3600000;\n  const customerWa = toIntl(o.WhatsApp || o.Phone);\n  const reminded = String(o.ReminderSentAt || '').trim() !== '';\n\n  if (ageHours >= CANCEL_AFTER_HOURS) {\n    if (reminded) {\n      out.push({ ...base, action: 'cancel', ageHours: Math.floor(ageHours),\n        note: `Order ${o.OrderID} (Tk ${base.total}) auto-cancelled: unpaid after ${Math.floor(ageHours)} h and one reminder.` });\n    } else {\n      out.push({ ...base, action: 'review', ageHours: Math.floor(ageHours),\n        note: `Order ${o.OrderID} (Tk ${base.total}) unpaid for ${Math.floor(ageHours)} h but no reminder was sent` +\n          (customerWa ? '.' : ' (no valid WhatsApp number).') + ' Please follow up by phone.' });\n    }\n  } else if (ageHours >= REMIND_AFTER_HOURS && !reminded && customerWa && !quiet) {\n    out.push({ ...base, action: 'remind', customerWa, payTo: PAY_TO, ageHours: Math.floor(ageHours),\n      sentAt: new Date(now).toISOString() });\n  }\n}\n// Reminders first so a busy run never starves them behind cancellations.\nconst rank = { remind: 0, cancel: 1, review: 2 };\nout.sort((a, b) => rank[a.action] - rank[b.action]);\nreturn out.slice(0, MAX_PER_RUN).map((json) => ({ json }));"
+      },
+      "id": "af36de12-cb3f-5145-a2af-eacf229e3f95",
+      "name": "Pick Orders Due",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "remind",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7e4db85e-bd08-5129-929b-a9844c5c6408",
+      "name": "Send Reminder?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.customerWa, type: 'template', template: { name: 'YOUR_TEMPLATE_NAME', language: { code: 'bn' }, components: [{ type: 'body', parameters: [{ type: 'text', text: String($json.name || 'Customer') }, { type: 'text', text: $json.orderId }, { type: 'text', text: String($json.total) }, { type: 'text', text: $json.payTo }] }] } }) }}",
+        "options": {}
+      },
+      "id": "b3d1782c-f400-5e7a-b0f8-b7aeaf43b095",
+      "name": "Send WhatsApp Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        80
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "OrderID": "={{ $('Pick Orders Due').item.json.orderId }}",
+            "ReminderSentAt": "={{ $('Pick Orders Due').item.json.sentAt }}"
+          },
+          "matchingColumns": [
+            "OrderID"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "116fac59-9763-5ec4-8f03-40e948c78dc7",
+      "name": "Mark Reminder Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=WhatsApp reminder for order {{ $('Pick Orders Due').item.json.orderId }} failed. Check the template name and the number {{ $('Pick Orders Due').item.json.customerWa }}.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "17c472fd-8704-521b-9a63-27c4f2846c5c",
+      "name": "Alert Owner: Reminder Failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "cancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0851ac86-4a2e-5e89-aa42-f24f2cbfcd72",
+      "name": "Cancel Order?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Orders",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "OrderID": "={{ $json.orderId }}",
+            "Status": "Cancelled"
+          },
+          "matchingColumns": [
+            "OrderID"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "0db92aaa-3e5b-5421-85e8-05702990e9ec",
+      "name": "Mark Order Cancelled",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        280
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $('Cancel Order?').item.json.note }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "50be3c98-95b9-50d6-bfa5-0538667119d5",
+      "name": "Alert Owner: Order Cancelled",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1320,
+        280
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.note }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "29c8c83d-f9f2-5976-ae1e-9de6f59b5e2b",
+      "name": "Alert Owner: Needs Review",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        440
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Read Pending Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Pending Orders": {
+      "main": [
+        [
+          {
+            "node": "Pick Orders Due",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Orders Due": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel Order?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Reminder": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Owner: Reminder Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Order?": {
+      "main": [
+        [
+          {
+            "node": "Mark Order Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Owner: Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Order Cancelled": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner: Order Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Dhaka"
+  },
+  "pinData": {},
+  "tags": []
+}

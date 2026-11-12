@@ -13,6 +13,9 @@
  *   5. No credential-looking secrets are embedded (API keys, bearer tokens,
  *      private keys, long hard-coded passwords). Credential *references*
  *      (the "credentials" block with id/name) are fine.
+ *   6. JavaScript in Code nodes (parameters.jsCode) compiles, so a stray
+ *      bracket is caught before import instead of at the first execution.
+ *   7. A template's workflow.json has a README.md next to it.
  *
  * Usage: node scripts/validate-workflows.js [directory]
  * Exit code is 1 if any error is found. No dependencies.
@@ -20,9 +23,10 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.resolve(process.argv[2] || '.');
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.github']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.github', 'test']);
 const SKIP_FILES = new Set(['package.json', 'package-lock.json', 'composer.json', 'tsconfig.json']);
 
 const SECRET_PATTERNS = [
@@ -144,6 +148,21 @@ function validate(file) {
       errors.push(`node "${n.name}" (${n.type}) is not connected to anything (orphaned)`);
     }
   });
+
+  wf.nodes.forEach((n) => {
+    const code = n && n.parameters && n.parameters.jsCode;
+    if (typeof code !== 'string') return;
+    try {
+      // Code nodes run as the body of an async function (top-level return/await are allowed).
+      new vm.Script(`(async function () {\n${code}\n})`, { filename: `${n.name}.js` });
+    } catch (e) {
+      errors.push(`node "${n.name}": JavaScript does not compile: ${e.message}`);
+    }
+  });
+
+  if (path.basename(file) === 'workflow.json' && !fs.existsSync(path.join(path.dirname(file), 'README.md'))) {
+    errors.push('template folder has no README.md');
+  }
 
   scanSecrets(wf, '$', (m) => errors.push(`possible secret: ${m}`));
   return { errors, skipped: false, nodeCount: wf.nodes.length };
